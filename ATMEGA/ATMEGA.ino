@@ -1,68 +1,63 @@
 #include <ArduinoJson.h>
 #include <SoftwareSerial.h>
-
-class SystemParameters {
-  public:             
-    double irrigationOnPercentage;
-    double irrigationOffPercentage;
-
-    double dangerousTemperature;
-
-    SystemParameters(double iOn, double iOff, double dT){
-      irrigationOffPercentage = iOff;
-      irrigationOnPercentage = iOn;
-      dangerousTemperature = dT;
-    }
-
-};
-
-class StreamData {
-  public:
-  double humidity;
-  double temperature;
-
-  StreamData(double h, double t){
-    humidity = h;
-    temperature = t;
-  }
-};
+#include "SystemParameters.h"
+#include "StreamData.h"
 
 #define UMIDITY_SENSOR A0
+#define TEMP_SENSOR 7
+#define FLUX_SENSOR A1
+#define WATER_V_1 3
+#define WATER_V_2 4
 
-SoftwareSerial espSerial(10,11);
 
+//Umidity Config
 double umiditySensorLowestValue = 1024;
 double umiditySensorHighestValue = 0;
 double umidityInPercentage = 0;
 
-SystemParameters parameters(0,100,100);
-StreamData data(1,1);
+//Flux Config
+double fluxSensorLowestValue = 1024;
+double fluxSensorHighestValue = 0;
+double fluxInPercentage = 0;
+
+SystemParameters parameters(0,70,30);
+StreamData data(1,1,1);
+
 
 void setup() {
   Serial.begin(9600);
-  espSerial.begin(9600);
   setPins();
 }
 
 void loop() {
-  //Read esp commands
-  SystemParameters* espParameters = readEsp();
-
-  if(espParameters != nullptr){
-    parameters = *espParameters;
-  }
-
   data.humidity = calibratedUmiditySensorValue(readUmiditySensor());
+  data.flux = calibratedFluxSensorValue(readFluxSensor());
 
-  //Send to esp
-  sendEsp(data);
+  openOrCloseWater();
+  Serial.print("Actual val: ");
+  Serial.println(analogRead(FLUX_SENSOR));
+  Serial.println(data.flux);
+  //Every time it receives parameters it will respond with the data
+  String result = Serial.readString();
+  if(result.startsWith("ESP: ")){
+    digitalWrite(LED_BUILTIN, 1);
+    delay(500);
+    digitalWrite(LED_BUILTIN, 0);
+    result.replace("ESP: ", "");
+    dealWithEspResult(result);
+    //Send response
+    sendDataToEsp(data);
+  }
 }
 
 //=======================================================================================================================================================
 //Set Pins
 void setPins(){
   pinMode(UMIDITY_SENSOR, INPUT);
+  pinMode(FLUX_SENSOR, INPUT);
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(WATER_V_1, OUTPUT);
+  pinMode(WATER_V_2, OUTPUT);
 }
 //=======================================================================================================================================================
 //Umidity Sensor Management
@@ -73,45 +68,76 @@ double readUmiditySensor(){
     umiditySensorHighestValue = result;
   }
   if(result < umiditySensorLowestValue){
-    umiditySensorHighestValue = result;
+    umiditySensorLowestValue = result;
   }
 
   return result;
 }
 
 double calibratedUmiditySensorValue(double raw){
-  return map(raw, umiditySensorLowestValue, umiditySensorHighestValue , 0, 100);
+  return map(raw, umiditySensorHighestValue, umiditySensorLowestValue , 0, 100);
+}
+
+//Flux Sensor Management
+double readFluxSensor(){
+  double result = analogRead(FLUX_SENSOR);
+
+  if(result > fluxSensorHighestValue){
+    fluxSensorHighestValue = result;
+  }
+  if(result < fluxSensorLowestValue){
+    fluxSensorLowestValue = result;
+  }
+
+  return result;
+}
+double calibratedFluxSensorValue(double raw){
+  return map(raw, fluxSensorHighestValue, fluxSensorLowestValue , 0, 100);
+}
+
+//Water Management
+void openOrCloseWater(){
+  if(data.humidity >= parameters.irrigationOffPercentage){
+    turnOffWater();
+  }
+  else if(data.humidity <= parameters.irrigationOnPercentage){
+    turnOnWater();
+  }
+}
+
+void turnOffWater(){
+  Serial.println("TURNING OFF WATER");
+  digitalWrite(WATER_V_1, 1);
+  digitalWrite(WATER_V_2, 1);
+}
+void turnOnWater(){
+  Serial.println("TURNING ON WATER");
+  digitalWrite(WATER_V_1, 1);
+  digitalWrite(WATER_V_2, 0);
+
 }
 
 //=======================================================================================================================================================
 //Connection Management
-SystemParameters* readEsp(){
+void dealWithEspResult(String result){
   JsonDocument doc;
-
-  String result = Serial.readString();
-
-  if(result){
-    DeserializationError error = deserializeJson(doc, result);
-    if (error) {
-      Serial.print("deserializeJson() failed: ");
-      Serial.println(error.c_str());
-      return nullptr;
-    }
-
-  SystemParameters newParams(doc["iOn"],doc["iOff"],doc["dT"]);
-
-  return &newParams;
+  DeserializationError error = deserializeJson(doc, result);
+  if (error) {
   }
-
+  SystemParameters newParams(doc["humidityOnPercentage"],doc["humidityOffPercentage"],doc["dangerousTemperature"]);
+  parameters = newParams;
 }
 
-void sendEsp(StreamData data){
+void sendDataToEsp(StreamData data){
   JsonDocument doc;
 
   doc["humidity"] = data.humidity;
   doc["temperature"] = data.temperature;
 
-  doc.shrinkToFit();  // optional
+  doc.shrinkToFit(); 
 
-  serializeJson(doc, espSerial);
+  String sendingString;
+  serializeJson(doc, sendingString);
+  sendingString = "ATMEGA: " + sendingString;
+  Serial.println(sendingString.c_str());
 }
