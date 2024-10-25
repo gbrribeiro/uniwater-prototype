@@ -5,15 +5,19 @@
 #include "SystemParameters.h"
 #include "StreamData.h"
 
+#include <DNSServer.h>
+#include <WiFiManager.h>
+
 #ifndef STASSID
 #define STASSID "NTBR"
 #define STAPSK "12345678"
 #endif
 
-String apiUrl = "https://192.168.2.237:81";
-String apiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJSb2xlIjoiQWRtaW4iLCJuYmYiOjE3MjY1Nzk5ODksImV4cCI6MTc1ODEzNjkxNSwiaXNzIjoiaHR0cDovL2xvY2FsaG9zdCIsImF1ZCI6IkF1ZGllbmNlIn0.Jj7x3YeMczvOCD2ypJ9poeFMmCGllSl-GW59ov6ZG88";
-const char* ssid = STASSID;
-const char* password = STAPSK;
+String apiUrl = "https://15.228.58.104:443";
+//String apiUrl = "https://192.168.2.237:443";
+String apiKey;
+// const char* ssid = STASSID;
+// const char* password = STAPSK;
 
 SystemParameters parameters(20,80,100);
 StreamData data(0,0);
@@ -25,6 +29,7 @@ void setup(){
   Serial.begin(9600);
   pinMode(LED_BUILTIN, OUTPUT);
   setupWifi();
+  authenticate();
 }
 
 void loop(){
@@ -41,7 +46,7 @@ void loop(){
     sendToApi();
     //Gets the API parameters
     //Send parameters to Arduino MC
-    delay(1000);
+    delay(4000);
   }
 
 }
@@ -76,8 +81,20 @@ void readMCResponse(){
 //=======================================================================================================================================================
 //HTTP Setup
 void setupWifi(){
-  WiFi.mode(WIFI_STA);
-  WiFiMulti.addAP(ssid, password);
+  WiFiManager wifiManager;
+  wifiManager.setConfigPortalTimeout(240);
+
+  //Cria um AP (Access Point) com: ("nome da rede", "senha da rede")
+  if (!wifiManager.autoConnect("Arduino", "arduinowifi")) {
+    Serial.println(F("Falha na conexao. Resetar e tentar novamente..."));
+    delay(3000);
+    ESP.restart();
+    delay(5000);
+  }
+  //Mensagem caso conexao Ok
+  Serial.println(F("Conectado na rede Wifi."));
+  Serial.print(F("Endereco IP: "));
+  Serial.println(WiFi.localIP());
 }
 
 //=======================================================================================================================================================
@@ -91,8 +108,12 @@ SystemParameters fetchFromApi(){
   String newUrl = apiUrl + "/api/v1/System";
   http.begin(client, newUrl);
   String key = "Bearer " + apiKey;
-  http.setAuthorization(key);
-  http.GET();
+  http.addHeader("Authorization", key);
+  int responseCode = http.GET();
+  if(responseCode == 401){
+    authenticate();
+    return fetchFromApi();
+  }
 
   // Deserialize the response
   JsonDocument doc;
@@ -102,6 +123,33 @@ SystemParameters fetchFromApi(){
   http.end();
   SystemParameters params(doc["humidityOnPercentage"], doc["humidityOffPercentage"], doc["dangerousTemperature"]);
   return params;
+}
+
+void authenticate(){
+  WiFiClientSecure client;
+  HTTPClient http;
+  client.setInsecure(); 
+
+  // Send request
+  String newUrl = apiUrl + "/api/v1/Identity/Login";
+
+  JsonDocument doc;
+  doc["username"] = "SUPERADMIN@ADMIN.com";
+  doc["password"] = "Admin@2024";
+  doc.shrinkToFit();  // optional
+
+  String json;
+  serializeJson(doc, json);
+
+  http.begin(client, newUrl);
+  http.addHeader("accept", "text/plain");
+  http.addHeader("Content-Type", "application/json");
+ 
+  int resp = http.POST(json);
+
+  apiKey = http.getString();
+
+  http.end();
 }
 
 void sendToApi(){
@@ -114,7 +162,7 @@ void sendToApi(){
   http.begin(client, newUrl);
 
   String key = "Bearer " + apiKey;
-  http.setAuthorization(key);
+  http.addHeader("Authorization", key);
 
   http.addHeader("Content-Type", "application/json");
 
@@ -128,9 +176,12 @@ void sendToApi(){
 
   String json;
   serializeJson(doc, json);
-  http.POST(json);
+  int statusCode = http.POST(json);
   // Read response
-  //Serial.write(http.getString());
+  if(statusCode == 401){
+    authenticate();
+    // sendToApi();
+  }
 
   // Disconnect
   http.end();

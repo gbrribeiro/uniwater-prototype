@@ -2,11 +2,9 @@ class StreamData {
   public:
   double humidity;
   double temperature;
-  double flux;
 
-  StreamData(double h, double t, double f){
+  StreamData(double h, double t){
     humidity = h;
     temperature = t;
-    flux = f;
   }
 };
